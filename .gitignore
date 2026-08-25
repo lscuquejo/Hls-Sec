@@ -1,0 +1,15 @@
+# Secrets / generated auth
+exports/*.sh
+!exports/.gitkeep
+
+# Probe artifacts
+out/*
+!out/.gitkeep
+*.mp4
+*.ts
+*.key
+*.m3u8
+embed.html
+
+# OS
+.DS_Store
