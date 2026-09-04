@@ -1,91 +1,95 @@
 # hls-security-probe
 
-Local tools to **test video delivery protection** (HLS + token auth).
+Local tools + **Docker UI** to test video delivery protection (HLS + token auth).
 
-Goal: show that “no `.mp4` in DevTools → Media” does **not** mean anti-download when:
+Paste a **club lesson URL** (uses your saved Hotmart login) or an embed iframe → auto exports → probe / clip / **full download (1h timeout)**.
 
-- `playDrm: false`
-- playback uses signed HLS (`.m3u8` + segments)
-- AES-128 keys are delivered to the client
+Use only on content/servers you are authorized to test.
 
-Use only on content/servers you are authorized to test (your own stack, or your own purchased session for security research).
+## Automate embed extraction (your login)
+
+### One-time setup
+
+```bash
+cd ~/studies/hls-security-probe
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
+```
+
+### Login once (browser window opens)
+
+```bash
+./bin/extract-embed.sh --login \
+  'https://hotmart.com/es/club/direito-cacd/products/2039476/content/64lK6nWbOj'
+```
+
+Log into Hotmart in that window. Profile is saved in `.playwright-profile/` (gitignored).
+
+### Later lessons (reuse login)
+
+```bash
+# print embed URL
+./bin/extract-embed.sh 'https://hotmart.com/es/club/.../content/PAGE_HASH'
+
+# extract → exports → 5s clip
+./bin/extract-embed.sh 'https://hotmart.com/es/club/.../content/PAGE_HASH' --run-clip
+
+# extract → exports → full download (1h)
+TIMEOUT_SEC=3600 ./bin/extract-embed.sh 'URL' --run-full
+```
+
+### Bookmarklet (on a page you’re already viewing)
+
+Drag **Copy Hotmart Embed** from the UI, or use `examples/bookmarklet.js`, onto your bookmarks bar. On the lesson page, click it → embed URL is copied → paste into the UI.
+
+## Quick start (UI on host — needed for browser login)
+
+```bash
+cd ~/studies/hls-security-probe
+source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8080
+```
+
+Open **http://localhost:8080**
+
+1. Paste club URL → **Extract embed (saved login)**
+2. Or paste iframe / embed URL
+3. **Run download** (default timeout 3600s)
+
+## Docker UI (download/parse only)
+
+Browser login extraction works best **on the host** (Playwright needs a GUI profile). Docker still works if you paste the embed/iframe:
+
+```bash
+docker compose up --build
+```
+
+## CLI without UI
+
+```bash
+pbpaste | ./bin/hotmart-embed-to-exports.sh
+source exports/hotmart-exports.sh
+SECONDS_CLIP=5 ./bin/fast-hls-security-test.sh clip
+TIMEOUT_SEC=3600 QUALITY=lowest ./bin/download-hls.sh
+```
 
 ## Layout
 
 ```
-bin/fast-hls-security-test.sh   # probe | clip
-bin/hotmart-embed-to-exports.sh # embed URL → export vars file
-exports/                        # generated lesson exports (gitignored)
-out/                            # sample clips / playlists (gitignored)
-examples/                       # local-server example
+bin/extract-embed.py|.sh   # club URL → embed (Playwright profile)
+bin/download-hls.sh
+bin/fast-hls-security-test.sh
+bin/hotmart-embed-to-exports.sh
+app/                       # FastAPI UI
+.playwright-profile/       # your Hotmart cookies (gitignored)
+exports/ out/
 ```
-
-## Dependencies
-
-```bash
-brew install ffmpeg
-# curl + python3 already on macOS/Homebrew
-```
-
-## Quick start (Hotmart-style embed)
-
-1. Copy the full `cf-embed.play.hotmart.com/embed/...` URL from the player iframe `src`.
-2. Generate exports:
-
-```bash
-cd ~/studies/hls-security-probe
-pbpaste | ./bin/hotmart-embed-to-exports.sh
-# or named file:
-# OUT=exports/parte03.sh pbpaste | ./bin/hotmart-embed-to-exports.sh
-```
-
-3. Load vars and run a **5s** clip test:
-
-```bash
-source exports/hotmart-exports.sh
-SECONDS_CLIP=5 ./bin/fast-hls-security-test.sh clip
-open out/hls-security-test/sample-5s.mp4
-```
-
-Faster auth-only check (no ffmpeg remux):
-
-```bash
-source exports/hotmart-exports.sh
-./bin/fast-hls-security-test.sh probe
-```
-
-### Required vars
-
-| Var | Meaning |
-|-----|---------|
-| `JWT` | player `jwtToken` |
-| `MEDIA` | media code (`/embed/<MEDIA>`) |
-| `APP` | `applicationCode` |
-| `USER_CODE` | `userCode` |
-| `USER_ID` | `user` |
-| `REF` | club lesson page URL (Referer) |
-| `EMBED` | optional full embed URL |
-| `PLAYLIST_URL` | skip Hotmart; hit playlist directly (local server) |
-
-## Test your own server
-
-```bash
-source examples/local-playlist.env.sh
-# edit PLAYLIST_URL first
-SECONDS_CLIP=5 ./bin/fast-hls-security-test.sh clip
-```
-
-## How to read results
-
-| Result | Meaning |
-|--------|---------|
-| `playDrm: False` + `CLIP OK` | clear/soft-encrypted HLS is obtainable with a valid session |
-| `PROBE OK` | playlist + key + segment fetchable |
-| embed title `400`/`401` | bad/expired JWT, bad Referer, or truncated EMBED |
-| Widevine/FairPlay in playlist | stronger DRM — clip may fail (good for protection) |
 
 ## Notes
 
-- Keep Mac awake for longer runs: `caffeinate -i SECONDS_CLIP=30 ./bin/fast-hls-security-test.sh clip`
-- JWT must be the full `eyJ...` string (`echo ${#JWT}` should be hundreds of chars, not `3`)
-- `exports/*.sh` contain secrets — gitignored on purpose
+- JWT must be full `eyJ...`
+- `.playwright-profile` and `exports/*.sh` contain secrets — gitignored
+- If extract fails: run `--login` again (session expired)
+# Hls-Sec
