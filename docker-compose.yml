@@ -31,6 +31,7 @@ services:
       APP_ROOT: /app
       BRAVE_CDP: auto
       CDP_CANDIDATES: http://host.docker.internal:9222,http://127.0.0.1:9222,ws://browser:3000
+      HOST_CONTROL_URLS: http://host.docker.internal:9277,http://127.0.0.1:9277
       EXTRACT_MODE: cdp
       PLAYWRIGHT_PROFILE: /app/.playwright-profile
     extra_hosts:

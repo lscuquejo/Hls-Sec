@@ -30,7 +30,9 @@
     <key>APP_ROOT</key>
     <string>__ROOT__</string>
     <key>BRAVE_CDP</key>
-    <string>http://127.0.0.1:9222</string>
+    <string>auto</string>
+    <key>CDP_CANDIDATES</key>
+    <string>http://127.0.0.1:9222,http://host.docker.internal:9222,ws://browser:3000</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>

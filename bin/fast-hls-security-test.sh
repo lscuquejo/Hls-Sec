@@ -18,7 +18,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MODE="${1:-clip}"          # probe | clip
-SECONDS_CLIP="${SECONDS_CLIP:-10}"
+SECONDS_CLIP="${SECONDS_CLIP:-5400}"
 OUT_DIR="${OUT_DIR:-$ROOT/out/hls-security-test}"
 mkdir -p "$OUT_DIR"
 
@@ -266,16 +266,40 @@ if [[ "$MODE" == "probe" ]]; then
 fi
 
 need ffmpeg
-OUT_MP4="$OUT_DIR/sample-${SECONDS_CLIP}s.mp4"
+SAFE_NAME="$(
+  VIDEO_TITLE="${VIDEO_TITLE:-}" MEDIA="${MEDIA:-}" SECONDS_CLIP="$SECONDS_CLIP" python3 - <<'PY'
+import os, re, unicodedata
+pretty = (os.environ.get("VIDEO_TITLE") or "").strip() or os.environ.get("MEDIA") or "clip"
+# ASCII-safe filename (accents → plain letters)
+pretty = unicodedata.normalize("NFKD", pretty)
+pretty = pretty.encode("ascii", "ignore").decode("ascii")
+safe = re.sub(r"[^A-Za-z0-9._-]+", "_", pretty).strip("._-")
+safe = (safe[:100] or "clip")
+print(f"{safe}-{os.environ.get('SECONDS_CLIP', 'clip')}s")
+PY
+)"
+OUT_MP4="$OUT_DIR/${SAFE_NAME}.mp4"
 echo
-echo "clip: fetching ${SECONDS_CLIP}s from lowest variant only..."
-ffmpeg -hide_banner -loglevel error -stats -y \
+echo "clip: fetching ${SECONDS_CLIP}s → $OUT_MP4"
+set +e
+# -progress pipe:1 emits out_time_ms=... lines for the UI progress bar
+ffmpeg -hide_banner -loglevel error -nostats -progress pipe:1 -y \
   -headers $'Referer: https://cf-embed.play.hotmart.com/\r\nUser-Agent: Mozilla/5.0\r\n' \
   -i "$VARIANT_URL" \
   -t "$SECONDS_CLIP" \
   -c copy \
   -bsf:a aac_adtstoasc \
   "$OUT_MP4"
+rc=$?
+set -e
+if [[ $rc -ne 0 ]]; then
+  echo "ffmpeg clip failed (exit $rc)" >&2
+  exit "$rc"
+fi
+if [[ ! -f "$OUT_MP4" ]]; then
+  echo "ffmpeg reported OK but file missing: $OUT_MP4" >&2
+  exit 1
+fi
 
 ls -lh "$OUT_MP4"
 echo

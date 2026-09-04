@@ -43,9 +43,12 @@
       padding: 12px 14px;
       font: inherit;
     }
-    input.club {
-      font-size: 1rem;
-      padding: 16px 18px;
+    textarea.club {
+      font-size: 0.95rem;
+      padding: 14px 16px;
+      min-height: 110px;
+      resize: vertical;
+      line-height: 1.4;
     }
     .row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 12px; }
     @media (max-width: 720px) { .row { grid-template-columns: 1fr 1fr; } }
@@ -87,31 +90,70 @@
     code { color: #c3d4ef; }
     details { margin-top: 12px; color: var(--muted); }
     details summary { cursor: pointer; margin-bottom: 8px; }
+    .batch-list { margin-top: 12px; display: grid; gap: 8px; }
+    .batch-item {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 0.85rem;
+    }
+    .batch-item .url { color: var(--muted); word-break: break-all; margin-top: 4px; }
+    .bar {
+      margin-top: 8px;
+      height: 8px;
+      background: #0c121b;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .bar > span {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #2a7ecf, var(--accent));
+      transition: width 0.35s ease;
+    }
+    .bar.done > span { background: var(--ok); }
+    .bar.err > span { background: var(--err); }
+    .bar-meta { margin-top: 4px; font-size: 0.75rem; color: var(--muted); }
   </style>
 </head>
 <body>
   <main>
     <h1>HLS Security Probe</h1>
     <p class="sub" id="subtitle">
-      Paste a Hotmart club lesson link → click <strong>Download</strong>.
+      Paste one or more club lesson URLs → <strong>Download</strong>. Use <strong>Restart Brave</strong> when CDP is offline.
     </p>
 
+    <section class="card" id="controlCard">
+      <div class="meta" id="svcMeta"></div>
+      <div class="actions" style="margin-top:12px">
+        <button id="btnRestartBrave" type="button">Restart Brave</button>
+        <button id="btnRefreshStatus" class="secondary" type="button">Refresh status</button>
+      </div>
+      <p class="sub" style="margin:12px 0 0;font-size:0.85rem" id="controlHint">
+        One-time Mac setup (if Restart Brave fails): <code>./bin/enable-ui.sh</code>
+      </p>
+    </section>
+
     <section class="card">
-      <label for="club">Club lesson URL</label>
-      <input class="club" id="club" placeholder="https://hotmart.com/es/club/direito-cacd/products/2039476/content/64lK6nWbOj" />
+      <label for="club">Club lesson URL(s) — one per line for bulk</label>
+      <textarea class="club" id="club" rows="4" placeholder="https://hotmart.com/es/club/.../content/ID1
+https://hotmart.com/es/club/.../content/ID2
+https://hotmart.com/es/club/.../content/ID3"></textarea>
 
       <div class="row">
         <div>
           <label for="mode">Mode</label>
           <select id="mode">
-            <option value="full" selected>Full download (1h)</option>
-            <option value="clip">Short clip</option>
+            <option value="full">Full download</option>
+            <option value="clip" selected>Clip (1h 30m)</option>
             <option value="probe">Probe only</option>
           </select>
         </div>
         <div>
           <label for="timeout">Timeout (sec)</label>
-          <input id="timeout" type="number" value="3600" min="30" max="7200" />
+          <input id="timeout" type="number" value="5400" min="30" max="10800" />
         </div>
         <div>
           <label for="quality">Quality</label>
@@ -121,8 +163,8 @@
           </select>
         </div>
         <div>
-          <label for="clipsec">Clip seconds</label>
-          <input id="clipsec" type="number" value="5" min="1" max="600" />
+          <label for="clipsec">Clip seconds (1h30m = 5400)</label>
+          <input id="clipsec" type="number" value="5400" min="1" max="10800" />
         </div>
       </div>
 
@@ -137,14 +179,15 @@
       </div>
 
       <details>
-        <summary>Advanced: paste embed / iframe instead</summary>
+        <summary>Advanced: paste embed / iframe instead (single)</summary>
         <label for="snippet">Embed URL or iframe HTML</label>
-        <textarea id="snippet" rows="5" placeholder="optional — if empty, club URL is extracted via Brave CDP"></textarea>
+        <textarea id="snippet" rows="5" placeholder="optional — single job only; bulk uses club URLs"></textarea>
       </details>
     </section>
 
     <section class="card" id="jobCard" hidden>
       <div class="meta" id="jobMeta"></div>
+      <div id="batchList" class="batch-list" hidden></div>
       <p id="fileLink"></p>
       <label>Live log</label>
       <pre id="log"></pre>
@@ -154,18 +197,50 @@
   <script>
     const $ = (id) => document.getElementById(id);
     let pollTimer = null;
+    const CLIP_DEFAULT = 5400; // 1h 30m
 
-    fetch("/api/config").then(r => r.json()).then(cfg => {
+    function applyConfig(cfg) {
       $("cdp").value = cfg.cdp_auto ? "auto" : (cfg.brave_cdp || "auto");
-      const sub = $("subtitle");
-      const hint = cfg.login_hint || "Start ./bin/brave-debug.sh and log into Hotmart";
-      const status = cfg.brave_ok
-        ? '<span style="color:#3d7a4a">Brave CDP connected</span>'
-        : '<span style="color:#a14a3a">Brave CDP offline</span>';
-      sub.innerHTML =
-        'Paste a club lesson URL → <strong>Download</strong>. ' +
-        status + ' — ' + hint;
-    }).catch(() => {});
+      const bravePill = cfg.brave_ok
+        ? '<span class="pill ok">Brave CDP connected</span>'
+        : '<span class="pill err">Brave CDP offline</span>';
+      $("svcMeta").innerHTML = bravePill +
+        (cfg.cdp_selected ? `<span class="pill">${cfg.cdp_selected}</span>` : "");
+      $("subtitle").innerHTML = cfg.brave_ok
+        ? 'Paste one or more club URLs (one per line) → <strong>Download</strong>. Stay logged into Hotmart in Brave.'
+        : 'Brave is offline — click <strong>Restart Brave</strong>, log into Hotmart, then Download.';
+      $("controlHint").style.display = cfg.brave_ok ? "none" : "block";
+    }
+
+    function refreshConfig() {
+      return fetch("/api/config").then(r => r.json()).then(applyConfig).catch(() => {});
+    }
+
+    refreshConfig();
+    setInterval(refreshConfig, 8000);
+
+    $("btnRefreshStatus").onclick = () => refreshConfig();
+
+    $("btnRestartBrave").onclick = async () => {
+      if (!confirm("Quit Brave and restart it with remote debugging?")) return;
+      $("btnRestartBrave").disabled = true;
+      try {
+        const res = await fetch("/api/brave/restart", { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(detailError(data));
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          await refreshConfig();
+          const cfg = await fetch("/api/config").then(r => r.json());
+          if (cfg.brave_ok) break;
+        }
+        alert(data.hint || (data.brave_ok ? "Brave restarted." : "Brave restart requested — log into Hotmart."));
+      } catch (e) {
+        alert(e.message || e);
+      } finally {
+        $("btnRestartBrave").disabled = false;
+      }
+    };
 
     function detailError(data) {
       if (!data) return "request failed";
@@ -173,34 +248,93 @@
       return JSON.stringify(data.detail || data);
     }
 
-    async function poll(jobId) {
+    function parseClubUrls() {
+      return $("club").value
+        .split(/[\n,]+/)
+        .map(s => s.trim())
+        .filter(s => s && !s.startsWith("#"));
+    }
+
+    function progressBar(job) {
+      const pct = Math.max(0, Math.min(100, Number(job.progress || 0)));
+      const cls = job.status === "ok" ? "done" : (job.status === "error" || job.status === "timeout") ? "err" : "";
+      const label = job.phase === "extracting" ? "extracting…"
+        : job.phase === "downloading" ? `${job.progress_label || pct + "%"} · ${job.progress_time || ""}`
+        : (job.status === "queued" ? "queued" : (job.progress_label || ""));
+      return `<div class="bar ${cls}"><span style="width:${job.status === "ok" ? 100 : pct}%"></span></div>
+        <div class="bar-meta">${label}</div>`;
+    }
+
+    async function pollJob(jobId) {
       const res = await fetch(`/api/jobs/${jobId}`);
       const job = await res.json();
       $("jobCard").hidden = false;
-      const st = job.status === "ok" ? "ok" : job.status === "running" ? "" : "err";
+      $("batchList").hidden = true;
+      const st = job.status === "ok" ? "ok" : job.status === "running" || job.status === "queued" ? "" : "err";
       $("jobMeta").innerHTML = `
         <span class="pill ${st}">${job.status}</span>
         <span class="pill">${job.phase || ""}</span>
         <span class="pill">${job.mode || ""}</span>
         <span class="pill">${job.media || "…"}</span>
+        <span class="pill">${job.progress_label || ""}</span>
         <span class="pill">exit ${job.exit_code ?? "…"}</span>
       `;
+      $("batchList").hidden = false;
+      $("batchList").innerHTML = `<div class="batch-item">${progressBar(job)}</div>`;
       $("log").textContent = job.log_tail || "";
       $("log").scrollTop = $("log").scrollHeight;
       if (job.embed_src && !$("snippet").value) $("snippet").value = job.embed_src;
       if (job.output_file) {
-        $("fileLink").innerHTML = `<a href="${job.output_file}" download>Download output file</a>`;
+        const name = job.output_name || job.title || "output.mp4";
+        $("fileLink").innerHTML = `<a href="${job.output_file}" download="${name}">Download ${name}</a>`;
       }
-      if (job.status === "running") {
-        pollTimer = setTimeout(() => poll(jobId), 1200);
+      if (job.status === "running" || job.status === "queued") {
+        pollTimer = setTimeout(() => pollJob(jobId), 800);
+      }
+    }
+
+    async function pollBatch(batchId) {
+      const res = await fetch(`/api/batches/${batchId}`);
+      const batch = await res.json();
+      $("jobCard").hidden = false;
+      $("batchList").hidden = false;
+      const st = batch.status === "ok" ? "ok" : batch.status === "running" ? "" : "err";
+      $("jobMeta").innerHTML = `
+        <span class="pill ${st}">batch ${batch.status}</span>
+        <span class="pill">${batch.done}/${batch.total}</span>
+        <span class="pill ok">ok ${batch.ok}</span>
+        <span class="pill err">err ${batch.error}</span>
+        ${batch.parallel ? `<span class="pill">parallel ×${batch.concurrency || 3}</span>` : ""}
+      `;
+      $("batchList").innerHTML = (batch.jobs || []).map(j => {
+        const js = j.status === "ok" ? "ok" : (j.status === "running" || j.status === "queued") ? "" : "err";
+        const link = j.output_file
+          ? ` · <a href="${j.output_file}" download="${j.output_name || "video.mp4"}">${j.output_name || "file"}</a>`
+          : "";
+        const title = j.title || j.media || "…";
+        return `<div class="batch-item">
+          <span class="pill ${js}">${j.status}</span>
+          <span class="pill">${j.phase || ""}</span>
+          <span class="pill">${title}</span>${link}
+          ${progressBar(j)}
+          <div class="url">${j.club_url || ""}</div>
+        </div>`;
+      }).join("");
+      const active = (batch.jobs || []).find(j => j.status === "running")
+        || (batch.jobs || []).find(j => j.status === "queued");
+      $("log").textContent = active?.log_tail || (batch.jobs || []).slice(-1)[0]?.log_tail || "";
+      $("log").scrollTop = $("log").scrollHeight;
+      $("fileLink").innerHTML = "";
+      if (batch.status === "running") {
+        pollTimer = setTimeout(() => pollBatch(batchId), 800);
       }
     }
 
     $("btnDownload").onclick = async () => {
-      const club = $("club").value.trim();
+      const urls = parseClubUrls();
       const snippet = $("snippet").value.trim();
-      if (!club && !snippet) {
-        alert("Paste a club lesson URL (or an embed in Advanced)");
+      if (!urls.length && !snippet) {
+        alert("Paste one or more club lesson URLs (or an embed in Advanced)");
         return;
       }
       $("btnDownload").disabled = true;
@@ -211,30 +345,39 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            club_url: club || null,
-            snippet: snippet || null,
+            // server splits on newlines — works for 1 or many URLs
+            club_url: $("club").value,
+            club_urls: urls.length > 1 ? urls : null,
+            snippet: urls.length > 1 ? null : (snippet || null),
             mode: $("mode").value,
-            timeout_sec: Number($("timeout").value || 3600),
+            timeout_sec: Number($("timeout").value || CLIP_DEFAULT),
             quality: $("quality").value,
-            seconds_clip: Number($("clipsec").value || 5),
+            seconds_clip: Number($("clipsec").value || CLIP_DEFAULT),
             cdp: $("cdp").value.trim() || null,
-            ref_override: club || null,
+            ref_override: urls[0] || null,
           }),
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(detailError(data));
-        await poll(data.job.id);
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(detailError(data) || `HTTP ${res.status}`);
+        if (!data) throw new Error("Empty response from server");
+        if (data.batch) await pollBatch(data.batch.id);
+        else await pollJob(data.job.id);
       } catch (e) {
-        alert(e.message || e);
+        const msg = String(e.message || e);
+        if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+          alert("UI server is down. Run: ./bin/enable-ui.sh\nThen retry Download.");
+        } else {
+          alert(msg);
+        }
       } finally {
         $("btnDownload").disabled = false;
       }
     };
 
     $("btnExtractOnly").onclick = async () => {
-      const club = $("club").value.trim();
-      if (!club) {
-        alert("Paste a club lesson URL first");
+      const urls = parseClubUrls();
+      if (urls.length !== 1) {
+        alert("Extract only works with a single club URL");
         return;
       }
       $("btnExtractOnly").disabled = true;
@@ -243,7 +386,7 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            club_url: club,
+            club_url: urls[0],
             cdp: $("cdp").value.trim() || null,
             timeout_ms: 180000,
           }),
@@ -252,6 +395,7 @@
         if (!res.ok) throw new Error(detailError(data));
         $("snippet").value = data.embed_src || "";
         $("jobCard").hidden = false;
+        $("batchList").hidden = true;
         $("jobMeta").innerHTML = `<span class="pill ok">extracted</span><span class="pill">${data.vars?.media || ""}</span>`;
         $("log").textContent = data.embed_src || "";
         $("fileLink").innerHTML = "";
@@ -261,10 +405,6 @@
         $("btnExtractOnly").disabled = false;
       }
     };
-
-    $("club").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") $("btnDownload").click();
-    });
   </script>
 </body>
 </html>

@@ -1,37 +1,32 @@
 # hls-security-probe
 
-Paste a Hotmart **club lesson link** → click **Download** in the UI.
+Paste a Hotmart **club lesson link** → manage everything from the UI.
 
-## Recommended flow (Docker UI + host Brave)
+## One-time setup (then only use the UI)
 
 ```bash
 cd ~/studies/hls-security-probe
+./bin/enable-ui.sh
+```
 
-# 1) Host Brave with your Hotmart session (quit Brave first if open)
-./bin/brave-debug.sh
+That installs macOS LaunchAgents (UI + Brave). After reboot/login they come back automatically.
 
-# 2) Another terminal — UI + fallback browser in Docker
+Then open **http://127.0.0.1:8080** and stay there:
+
+| UI control | What it does |
+|---|---|
+| **Restart Brave** | Quits Brave and starts it with debugging |
+| **Download** | Extracts embed via Brave + downloads the lesson |
+| **Refresh status** | Re-checks Brave CDP |
+
+No more terminal for daily use. Disable with `./bin/uninstall-autostart.sh`.
+
+## Optional: Docker UI
+
+Only if you prefer containers (Restart Brave needs `./bin/host-control.sh` or `./bin/enable-ui.sh` instead):
+
+```bash
 ./bin/docker-up.sh
-```
-
-Open **http://127.0.0.1:8080** → paste club URL → **Download**.
-
-The app **checks Brave first** (`host.docker.internal:9222`), then falls back to the Docker browser.
-
-```bash
-./bin/docker-status.sh
-./bin/docker-down.sh
-```
-
-Enable **Start Docker Desktop when you log in** so the UI returns after reboot.
-
-## Local (no Docker)
-
-```bash
-./bin/start-all.sh          # Brave CDP + UI in background
-./bin/status-all.sh
-./bin/stop-all.sh
-./bin/install-autostart.sh  # macOS LaunchAgents (after reboot/login)
 ```
 
 ## Automate embed extraction (CLI)

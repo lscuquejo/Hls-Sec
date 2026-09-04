@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Host helper so the UI "Restart Brave" button works from Docker
+./bin/host-control.sh
+
 docker compose up -d --build
 
 echo
@@ -16,13 +19,9 @@ if curl -fsS -m 2 "http://127.0.0.1:9222/json/version" >/dev/null 2>&1; then
   echo "Brave CDP: OK on :9222 (will be used first)."
   echo "  Stay logged into Hotmart in that Brave window."
 else
-  echo "Brave CDP: not running yet — start it (recommended):"
-  echo "  1) Quit Brave if it is open"
-  echo "  2) ./bin/brave-debug.sh"
-  echo "  3) Log into Hotmart in that Brave window"
-  echo "  4) Retry Download in the UI"
-  echo
-  echo "Fallback only: http://127.0.0.1:3000/debugger/"
+  echo "Brave CDP: not running — use the UI button “Restart Brave”, or:"
+  echo "  ./bin/brave-debug.sh"
+  echo "Then log into Hotmart in that Brave window."
 fi
 
 echo
