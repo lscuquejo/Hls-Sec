@@ -1,11 +1,41 @@
 services:
+  # Headless Chromium with CDP + web debugger (login once, session persists)
+  browser:
+    image: ghcr.io/browserless/chromium:v2.56.0
+    restart: unless-stopped
+    environment:
+      TIMEOUT: "600000"
+      CONCURRENT: "3"
+      # Keep Hotmart cookies across restarts
+      DEFAULT_LAUNCH_ARGS: '["--user-data-dir=/user-data","--disable-blink-features=AutomationControlled"]'
+    volumes:
+      - browser-data:/user-data
+    ports:
+      - "3000:3000"
+    shm_size: "2gb"
+
   probe:
     build: .
+    restart: unless-stopped
+    depends_on:
+      - browser
     ports:
       - "8080:8080"
     volumes:
       - ./exports:/app/exports
       - ./out:/app/out
+      - ./bin:/app/bin
+      - ./app:/app/app
+      - playwright-profile:/app/.playwright-profile
     environment:
       APP_ROOT: /app
-    restart: unless-stopped
+      BRAVE_CDP: auto
+      CDP_CANDIDATES: http://host.docker.internal:9222,http://127.0.0.1:9222,ws://browser:3000
+      EXTRACT_MODE: cdp
+      PLAYWRIGHT_PROFILE: /app/.playwright-profile
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  browser-data:
+  playwright-profile:

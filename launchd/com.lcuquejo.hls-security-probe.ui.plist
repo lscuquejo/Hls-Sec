@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lcuquejo.hls-security-probe.ui</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__ROOT__/.venv/bin/python</string>
+    <string>-m</string>
+    <string>uvicorn</string>
+    <string>app.main:app</string>
+    <string>--host</string>
+    <string>0.0.0.0</string>
+    <string>--port</string>
+    <string>8080</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__ROOT__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__ROOT__/out/logs/ui.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>__ROOT__/out/logs/ui.launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>APP_ROOT</key>
+    <string>__ROOT__</string>
+    <key>BRAVE_CDP</key>
+    <string>http://127.0.0.1:9222</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

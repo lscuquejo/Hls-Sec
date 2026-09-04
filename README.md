@@ -1,12 +1,40 @@
 # hls-security-probe
 
-Local tools + **Docker UI** to test video delivery protection (HLS + token auth).
+Paste a Hotmart **club lesson link** → click **Download** in the UI.
 
-Paste a **club lesson URL** (uses your saved Hotmart login) or an embed iframe → auto exports → probe / clip / **full download (1h timeout)**.
+## Recommended flow (Docker UI + host Brave)
 
-Use only on content/servers you are authorized to test.
+```bash
+cd ~/studies/hls-security-probe
 
-## Automate embed extraction (your login)
+# 1) Host Brave with your Hotmart session (quit Brave first if open)
+./bin/brave-debug.sh
+
+# 2) Another terminal — UI + fallback browser in Docker
+./bin/docker-up.sh
+```
+
+Open **http://127.0.0.1:8080** → paste club URL → **Download**.
+
+The app **checks Brave first** (`host.docker.internal:9222`), then falls back to the Docker browser.
+
+```bash
+./bin/docker-status.sh
+./bin/docker-down.sh
+```
+
+Enable **Start Docker Desktop when you log in** so the UI returns after reboot.
+
+## Local (no Docker)
+
+```bash
+./bin/start-all.sh          # Brave CDP + UI in background
+./bin/status-all.sh
+./bin/stop-all.sh
+./bin/install-autostart.sh  # macOS LaunchAgents (after reboot/login)
+```
+
+## Automate embed extraction (CLI)
 
 ### One-time setup
 
@@ -18,14 +46,27 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-### Login once (browser window opens)
+### Login once (Brave window opens)
 
 ```bash
 ./bin/extract-embed.sh --login \
   'https://hotmart.com/es/club/direito-cacd/products/2039476/content/64lK6nWbOj'
 ```
 
-Log into Hotmart in that window. Profile is saved in `.playwright-profile/` (gitignored).
+Log into Hotmart in Brave. Profile saved in `.playwright-brave-profile/`.
+
+### Reuse your real Brave login (recommended)
+
+`--existing-brave` often **hangs** on full profiles. Use CDP instead:
+
+```bash
+# Terminal 1 — quit Brave completely first
+./bin/brave-debug.sh
+
+# Terminal 2
+./bin/extract-embed.sh --cdp http://127.0.0.1:9222 \
+  'https://hotmart.com/es/club/direito-cacd/products/2039476/content/64lK6nWbOj'
+```
 
 ### Later lessons (reuse login)
 

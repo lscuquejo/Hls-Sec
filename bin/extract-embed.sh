@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Wrapper: extract embed from a Hotmart club URL using your saved login profile.
+# Extract embed from a Hotmart club URL.
 #
-# First time (login in the browser window that opens):
-#   ./bin/extract-embed.sh --login 'https://hotmart.com/es/club/.../content/...'
+# Recommended (your real Brave login):
+#   Terminal 1:  ./bin/brave-debug.sh          # quit Brave first
+#   Terminal 2:  ./bin/extract-embed.sh --cdp http://127.0.0.1:9222 'CLUB_URL'
 #
-# Later:
-#   ./bin/extract-embed.sh 'https://hotmart.com/es/club/.../content/...'
-#   ./bin/extract-embed.sh URL | ./bin/hotmart-embed-to-exports.sh
-#   ./bin/extract-embed.sh URL --run-clip
+# Dedicated profile:
+#   ./bin/extract-embed.sh --login 'CLUB_URL'
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -35,7 +34,18 @@ else
   source .venv/bin/activate
 fi
 
+# If user still passes --existing-brave, rewrite to the CDP workflow hint via python exit 2
+set +e
 EMBED_SRC="$(python3 bin/extract-embed.py "${ARGS[@]}")"
+rc=$?
+set -e
+if [[ $rc -eq 2 ]]; then
+  exit 2
+fi
+if [[ $rc -ne 0 ]]; then
+  exit "$rc"
+fi
+
 echo "$EMBED_SRC"
 
 if [[ "$RUN_CLIP" -eq 1 || "$RUN_FULL" -eq 1 ]]; then

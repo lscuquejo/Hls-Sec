@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lcuquejo.hls-security-probe.brave</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__ROOT__/bin/brave-debug.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__ROOT__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__ROOT__/out/logs/brave.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>__ROOT__/out/logs/brave.launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BRAVE_DEBUG_PORT</key>
+    <string>9222</string>
+  </dict>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>

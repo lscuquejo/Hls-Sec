@@ -13,6 +13,7 @@ embed.html
 
 # Browser login profile (contains your Hotmart session)
 .playwright-profile/
+.playwright-brave-profile/
 .venv/
 
 # OS / python
