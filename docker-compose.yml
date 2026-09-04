@@ -1,0 +1,11 @@
+services:
+  probe:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./exports:/app/exports
+      - ./out:/app/out
+    environment:
+      APP_ROOT: /app
+    restart: unless-stopped

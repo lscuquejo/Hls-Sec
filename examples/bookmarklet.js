@@ -1,0 +1,1 @@
+javascript:void((()=>{const i=document.querySelector('iframe#hotmart-player-embed,iframe[src*="cf-embed.play.hotmart.com/embed/"]');if(!i||!i.src){alert('Hotmart player iframe not found on this page');return;}const s=i.src;navigator.clipboard.writeText(s).then(()=>alert('Embed URL copied ('+s.length+' chars)')).catch(()=>{prompt('Copy embed URL:',s);});})();

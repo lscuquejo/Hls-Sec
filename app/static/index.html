@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HLS Security Probe</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3d9cf0;
+      --ok: #3ecf8e;
+      --err: #f07178;
+      --border: #2a3548;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(1200px 600px at 10% -10%, #1b2a44, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+    }
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    h1 { font-size: 1.5rem; margin: 0 0 6px; letter-spacing: -0.02em; }
+    .sub { color: var(--muted); margin-bottom: 24px; font-size: 0.95rem; }
+    .card {
+      background: color-mix(in srgb, var(--panel) 92%, black);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 8px; }
+    textarea, input, select {
+      width: 100%;
+      background: #0c121b;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+      font: inherit;
+    }
+    textarea { min-height: 140px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+    .row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 12px; }
+    @media (max-width: 720px) { .row { grid-template-columns: 1fr 1fr; } }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 10px 16px;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--accent);
+      color: #041018;
+    }
+    button.secondary { background: #243247; color: var(--text); }
+    button:disabled { opacity: 0.5; cursor: wait; }
+    pre {
+      background: #0c121b;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      overflow: auto;
+      max-height: 360px;
+      font-size: 0.78rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 0; }
+    .pill {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+    .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+    .pill.err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, var(--border)); }
+    a { color: var(--accent); }
+    .cmd { position: relative; }
+    .copy {
+      position: absolute; top: 8px; right: 8px;
+      padding: 6px 10px; font-size: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>HLS Security Probe</h1>
+    <p class="sub">Paste club URL (auto-extract with saved login) or embed iframe → exports → download (1h timeout).</p>
+
+    <section class="card">
+      <label for="club">Hotmart club lesson URL</label>
+      <input id="club" placeholder="https://hotmart.com/es/club/direito-cacd/products/2039476/content/64lK6nWbOj" />
+      <div class="actions">
+        <button id="btnExtract" type="button">Extract embed (saved login)</button>
+        <button id="btnExtractLogin" class="secondary" type="button">Extract + login window</button>
+      </div>
+      <p class="sub" style="margin:12px 0 0">
+        First time on host: <code>./bin/extract-embed.sh --login 'CLUB_URL'</code>
+        · Or drag this bookmarklet to bookmarks:
+        <a id="bookmarklet" href='javascript:void((()=>{const i=document.querySelector(&apos;iframe#hotmart-player-embed,iframe[src*=&quot;cf-embed.play.hotmart.com/embed/&quot;]&apos;);if(!i||!i.src){alert(&apos;Hotmart player iframe not found&apos;);return;}navigator.clipboard.writeText(i.src).then(()=>alert(&apos;Embed copied&apos;)).catch(()=>prompt(&apos;Copy:&apos;,i.src));})());'>Copy Hotmart Embed</a>
+      </p>
+    </section>
+
+    <section class="card">
+      <label for="snippet">Embed URL or iframe HTML</label>
+      <textarea id="snippet" placeholder="https://cf-embed.play.hotmart.com/embed/...?jwtToken=... or full &lt;iframe ...&gt;"></textarea>
+      <div class="row">
+        <div>
+          <label for="mode">Mode</label>
+          <select id="mode">
+            <option value="full" selected>Full download (1h timeout)</option>
+            <option value="clip">Short clip</option>
+            <option value="probe">Probe only</option>
+          </select>
+        </div>
+        <div>
+          <label for="timeout">Timeout (sec)</label>
+          <input id="timeout" type="number" value="3600" min="30" max="7200" />
+        </div>
+        <div>
+          <label for="quality">Quality</label>
+          <select id="quality">
+            <option value="lowest" selected>Lowest (faster)</option>
+            <option value="highest">Highest</option>
+          </select>
+        </div>
+        <div>
+          <label for="clipsec">Clip seconds</label>
+          <input id="clipsec" type="number" value="5" min="1" max="600" />
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <label for="ref">REF override (optional)</label>
+        <input id="ref" placeholder="https://hotmart.com/es/club/.../content/..." />
+      </div>
+      <div class="actions">
+        <button id="btnParse" class="secondary" type="button">Parse → exports</button>
+        <button id="btnRun" type="button">Run download</button>
+      </div>
+    </section>
+
+    <section class="card" id="result" hidden>
+      <div class="meta" id="meta"></div>
+      <label style="margin-top:12px">Exported shell command</label>
+      <div class="cmd">
+        <button class="copy secondary" type="button" data-copy="cmdFull">Copy</button>
+        <pre id="cmdFull"></pre>
+      </div>
+      <label>Export script path / source</label>
+      <div class="cmd">
+        <button class="copy secondary" type="button" data-copy="cmdSource">Copy</button>
+        <pre id="cmdSource"></pre>
+      </div>
+    </section>
+
+    <section class="card" id="jobCard" hidden>
+      <div class="meta" id="jobMeta"></div>
+      <p id="fileLink"></p>
+      <label>Live log</label>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let pollTimer = null;
+
+    document.querySelectorAll(".copy").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const el = $(btn.dataset.copy);
+        await navigator.clipboard.writeText(el.textContent);
+        btn.textContent = "Copied";
+        setTimeout(() => (btn.textContent = "Copy"), 1200);
+      });
+    });
+
+    function showVars(data) {
+      $("result").hidden = false;
+      const v = data.vars || {};
+      $("meta").innerHTML = `
+        <span class="pill ok">MEDIA ${v.media || "?"}</span>
+        <span class="pill">playDrm ${v.play_drm}</span>
+        <span class="pill">JWT ${v.jwt ? v.jwt.length : 0} chars</span>
+        <span class="pill">${(v.description || v.title || "").slice(0, 80)}</span>
+      `;
+      $("cmdFull").textContent = data.commands?.full || "";
+      $("cmdSource").textContent = data.commands?.source || "";
+    }
+
+    $("btnParse").onclick = async () => {
+      $("btnParse").disabled = true;
+      try {
+        const res = await fetch("/api/parse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ snippet: $("snippet").value }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "parse failed");
+        showVars(data);
+      } catch (e) {
+        alert(e.message || e);
+      } finally {
+        $("btnParse").disabled = false;
+      }
+    };
+
+    async function extractEmbed(login) {
+      const club = $("club").value.trim();
+      if (!club) {
+        alert("Paste a Hotmart club lesson URL first");
+        return;
+      }
+      $("btnExtract").disabled = true;
+      $("btnExtractLogin").disabled = true;
+      try {
+        const res = await fetch("/api/extract", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            club_url: club,
+            login: !!login,
+            headed: true,
+            timeout_ms: 180000,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail));
+        $("snippet").value = data.embed_src || "";
+        $("ref").value = club;
+        showVars(data);
+      } catch (e) {
+        alert(e.message || e);
+      } finally {
+        $("btnExtract").disabled = false;
+        $("btnExtractLogin").disabled = false;
+      }
+    }
+
+    $("btnExtract").onclick = () => extractEmbed(false);
+    $("btnExtractLogin").onclick = () => extractEmbed(true);
+
+    async function poll(jobId) {
+      const res = await fetch(`/api/jobs/${jobId}`);
+      const job = await res.json();
+      $("jobCard").hidden = false;
+      $("jobMeta").innerHTML = `
+        <span class="pill ${job.status === "ok" ? "ok" : job.status === "running" ? "" : "err"}">${job.status}</span>
+        <span class="pill">${job.mode}</span>
+        <span class="pill">${job.media || ""}</span>
+        <span class="pill">exit ${job.exit_code ?? "…"}</span>
+      `;
+      $("log").textContent = job.log_tail || "";
+      $("log").scrollTop = $("log").scrollHeight;
+      if (job.output_file) {
+        $("fileLink").innerHTML = `<a href="${job.output_file}" download>Download output file</a>`;
+      }
+      if (job.status === "running") {
+        pollTimer = setTimeout(() => poll(jobId), 1500);
+      }
+    }
+
+    $("btnRun").onclick = async () => {
+      $("btnRun").disabled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      try {
+        const payload = {
+          snippet: $("snippet").value,
+          mode: $("mode").value,
+          timeout_sec: Number($("timeout").value || 3600),
+          quality: $("quality").value,
+          seconds_clip: Number($("clipsec").value || 5),
+          ref_override: $("ref").value || null,
+        };
+        const res = await fetch("/api/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "start failed");
+        showVars(data);
+        $("fileLink").innerHTML = "";
+        await poll(data.job.id);
+      } catch (e) {
+        alert(e.message || e);
+      } finally {
+        $("btnRun").disabled = false;
+      }
+    };
+  </script>
+</body>
+</html>

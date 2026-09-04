@@ -11,5 +11,11 @@ out/*
 *.m3u8
 embed.html
 
-# OS
+# Browser login profile (contains your Hotmart session)
+.playwright-profile/
+.venv/
+
+# OS / python
 .DS_Store
+__pycache__/
+*.pyc
