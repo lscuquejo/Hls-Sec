@@ -4,6 +4,7 @@ AGENTS="$HOME/Library/LaunchAgents"
 UID_NUM="$(id -u)"
 
 for label in \
+  com.lcuquejo.hls-security-probe.host-control \
   com.lcuquejo.hls-security-probe.brave \
   com.lcuquejo.hls-security-probe.ui
 do

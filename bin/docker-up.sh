@@ -4,8 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-# Host helper so the UI "Restart Brave" button works from Docker
+# Host helper so the UI "Restart Brave" button works from Docker (also after reboot)
 ./bin/host-control.sh
+./bin/install-autostart.sh >/dev/null || true
 
 docker compose up -d --build
 

@@ -9,19 +9,23 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 try:
     from app.parser import parse_embed
+    from app import transcribe as tx
 except ImportError:
     from parser import parse_embed
+    import transcribe as tx
 
 ROOT = Path(os.environ.get("APP_ROOT", Path(__file__).resolve().parent.parent))
 EXPORTS = ROOT / "exports"
 OUT = ROOT / "out" / "downloads"
+TRANSCRIPTS = ROOT / "out" / "transcripts"
+UPLOADS = ROOT / "out" / "uploads"
 STATIC = Path(__file__).resolve().parent / "static"
 # "auto" = prefer host Brave, then Docker browserless
 DEFAULT_CDP = os.environ.get("BRAVE_CDP", "auto").strip() or "auto"
@@ -50,14 +54,19 @@ CDP_CANDIDATES = [
 
 EXPORTS.mkdir(parents=True, exist_ok=True)
 OUT.mkdir(parents=True, exist_ok=True)
+TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
+UPLOADS.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="HLS Security Probe UI")
 app.mount("/files", StaticFiles(directory=str(OUT)), name="files")
+app.mount("/transcripts", StaticFiles(directory=str(TRANSCRIPTS)), name="transcripts")
 
 jobs: dict[str, dict] = {}
 batches: dict[str, dict] = {}
+tx_jobs: dict[str, dict] = {}
 _extract_lock = asyncio.Lock()
 _batch_lock = asyncio.Lock()
+_tx_lock = asyncio.Lock()  # one heavy whisper job at a time on Mac
 BULK_CONCURRENCY = max(1, int(os.environ.get("BULK_CONCURRENCY", "3")))
 
 
@@ -321,7 +330,26 @@ async def api_config():
             else "Click “Restart Brave”, then log into Hotmart in the Brave window."
         ),
         "browser_debugger": "http://127.0.0.1:3000/debugger/",
+        "transcribe": tx.backend_info(),
     }
+
+
+def _host_control_bases() -> list[str]:
+    """Rewrite host.docker.internal → IP so Docker can reach the Mac helper."""
+    out: list[str] = []
+    for base in HOST_CONTROL_URLS:
+        try:
+            out.append(normalize_cdp_url(base).rstrip("/"))
+        except Exception:
+            out.append(base.rstrip("/"))
+    # de-dupe preserving order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for b in out:
+        if b not in seen:
+            seen.add(b)
+            uniq.append(b)
+    return uniq
 
 
 async def _host_control_health() -> dict:
@@ -335,7 +363,7 @@ async def _host_control_health() -> dict:
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
             return None
 
-    for base in HOST_CONTROL_URLS:
+    for base in _host_control_bases():
         data = await asyncio.to_thread(_get, base)
         if data and data.get("ok"):
             return {**data, "url": base}
@@ -359,7 +387,7 @@ async def _restart_brave_via_host_control() -> dict:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
+        _out, _err = await proc.communicate()
         if proc.returncode == 0:
             return {
                 "ok": True,
@@ -398,7 +426,7 @@ async def _restart_brave_via_host_control() -> dict:
             "hint": "Brave restarting — log into Hotmart in that window, then retry Download.",
         }
 
-    # 3) Docker UI → host-control bridge
+    # 3) Docker UI → host-control bridge on the Mac
     def _post(url: str) -> dict:
         req = urllib.request.Request(
             f"{url}/restart-brave",
@@ -410,7 +438,7 @@ async def _restart_brave_via_host_control() -> dict:
             return json.loads(resp.read().decode("utf-8"))
 
     errors: list[str] = []
-    for base in HOST_CONTROL_URLS:
+    for base in _host_control_bases():
         try:
             result = await asyncio.to_thread(_post, base)
             result.setdefault("mode", "host-control")
@@ -421,10 +449,13 @@ async def _restart_brave_via_host_control() -> dict:
     raise HTTPException(
         status_code=503,
         detail=(
-            "Cannot restart Brave from this UI process.\n"
-            "One-time setup (then manage everything from the UI):\n"
-            "  ./bin/enable-ui.sh\n"
-            f"Tried host-control: {'; '.join(errors) or 'none'}"
+            "Cannot restart Brave from Docker UI — host-control is not running.\n"
+            "On the Mac (once after reboot/setup):\n"
+            "  ./bin/install-autostart.sh\n"
+            "or:\n"
+            "  ./bin/host-control.sh\n"
+            "Then click Restart Brave again.\n"
+            f"Tried: {'; '.join(errors) or 'none'}"
         ),
     )
 
@@ -797,3 +828,168 @@ async def api_job(job_id: str):
 @app.get("/api/jobs")
 async def api_jobs():
     return {"jobs": list(jobs.values())[-20:]}
+
+
+class TranscribeJobRequest(BaseModel):
+    language: str = Field(default="pt")
+    model: str | None = None
+
+
+def _resolve_media_from_job(job: dict) -> Path:
+    out = job.get("output_file") or ""
+    # "/files/rel/path.mp4" → OUT / rel/path.mp4
+    if out.startswith("/files/"):
+        p = OUT / out[len("/files/") :]
+        if p.exists():
+            return p
+    name = job.get("output_name")
+    if name:
+        hits = sorted(OUT.rglob(name), key=lambda x: x.stat().st_mtime, reverse=True)
+        if hits:
+            return hits[0]
+    media = job.get("media")
+    if media:
+        hits = sorted(OUT.rglob(f"*{media}*.mp4"), key=lambda x: x.stat().st_mtime, reverse=True)
+        if hits:
+            return hits[0]
+    raise HTTPException(status_code=404, detail="Downloaded media file not found for this job")
+
+
+async def _run_transcribe(tx_id: str, media: Path, language: str, model: str | None) -> None:
+    tx_jobs[tx_id]["status"] = "running"
+    tx_jobs[tx_id]["phase"] = "transcribing"
+    tx_jobs[tx_id]["progress"] = 0
+    tx_jobs[tx_id]["progress_label"] = "starting"
+    log_path = Path(tx_jobs[tx_id]["log_path"])
+
+    def on_progress(pct: int, label: str) -> None:
+        tx_jobs[tx_id]["progress"] = pct
+        tx_jobs[tx_id]["progress_label"] = label or f"{pct}%"
+        if "extract" in label:
+            tx_jobs[tx_id]["phase"] = "extracting audio"
+        elif "loading" in label:
+            tx_jobs[tx_id]["phase"] = "loading model"
+        elif "writing" in label:
+            tx_jobs[tx_id]["phase"] = "writing"
+        elif label == "done":
+            tx_jobs[tx_id]["phase"] = "done"
+        else:
+            tx_jobs[tx_id]["phase"] = "transcribing"
+
+    try:
+        with log_path.open("a", encoding="utf-8") as log_f:
+            log_f.write(f"[transcribe] source={media}\n")
+            log_f.write(f"[transcribe] language={language} model={model or tx.DEFAULT_MODEL}\n")
+            log_f.flush()
+        async with _tx_lock:
+            result = await asyncio.to_thread(
+                tx.transcribe_file,
+                media,
+                out_dir=TRANSCRIPTS,
+                language=language or tx.DEFAULT_LANGUAGE,
+                model=model or tx.DEFAULT_MODEL,
+                progress_cb=on_progress,
+            )
+        tx_jobs[tx_id].update(
+            {
+                "status": "ok",
+                "phase": "done",
+                "progress": 100,
+                "progress_label": "100%",
+                "result": result,
+                "text_preview": (result.get("text") or "")[:2000],
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        with log_path.open("a", encoding="utf-8") as log_f:
+            log_f.write(f"[transcribe] OK engine={result.get('engine')} segments={result.get('segments')}\n")
+            log_f.write(f"[transcribe] txt={result.get('txt')}\n")
+    except Exception as e:
+        tx_jobs[tx_id].update(
+            {
+                "status": "error",
+                "phase": "done",
+                "progress_label": "error",
+                "error": str(e),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        with log_path.open("a", encoding="utf-8") as log_f:
+            log_f.write(f"[transcribe] ERROR: {e}\n")
+
+
+def _new_tx_job(source_label: str, media: Path) -> str:
+    tx_id = uuid.uuid4().hex[:12]
+    log_path = TRANSCRIPTS / f"tx-{tx_id}.log"
+    tx_jobs[tx_id] = {
+        "id": tx_id,
+        "status": "queued",
+        "phase": "starting",
+        "source": str(media),
+        "source_label": source_label,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+        "log_path": str(log_path),
+        "result": None,
+        "text_preview": "",
+        "error": None,
+        "progress": 0,
+        "progress_label": "queued",
+    }
+    log_path.write_text("", encoding="utf-8")
+    return tx_id
+
+
+@app.post("/api/transcribe/job/{job_id}")
+async def api_transcribe_job(job_id: str, body: TranscribeJobRequest = TranscribeJobRequest()):
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="download job not found")
+    if job.get("status") != "ok":
+        raise HTTPException(status_code=400, detail="Download is not finished yet")
+    if not tx.backend_info().get("ready"):
+        raise HTTPException(
+            status_code=503,
+            detail="Install mlx-whisper (Mac): pip install mlx-whisper",
+        )
+    media = _resolve_media_from_job(job)
+    tx_id = _new_tx_job(job.get("output_name") or job.get("media") or job_id, media)
+    job["transcript_id"] = tx_id
+    asyncio.create_task(
+        _run_transcribe(tx_id, media, body.language, body.model)
+    )
+    return {"ok": True, "transcript": tx_jobs[tx_id]}
+
+
+@app.post("/api/transcribe/upload")
+async def api_transcribe_upload(
+    file: UploadFile = File(...),
+    language: str = "pt",
+):
+    if not tx.backend_info().get("ready"):
+        raise HTTPException(
+            status_code=503,
+            detail="Install mlx-whisper (Mac): pip install mlx-whisper",
+        )
+    suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(file.filename or "upload").stem)[:80] or "upload"
+    dest = UPLOADS / f"{safe}-{uuid.uuid4().hex[:8]}{suffix}"
+    data = await file.read()
+    if len(data) < 1000:
+        raise HTTPException(status_code=400, detail="File too small")
+    dest.write_bytes(data)
+    tx_id = _new_tx_job(file.filename or dest.name, dest)
+    asyncio.create_task(_run_transcribe(tx_id, dest, language or "pt", None))
+    return {"ok": True, "transcript": tx_jobs[tx_id]}
+
+
+@app.get("/api/transcribe/{tx_id}")
+async def api_transcribe_status(tx_id: str):
+    item = tx_jobs.get(tx_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="transcript job not found")
+    log_tail = ""
+    log_path = Path(item.get("log_path") or "")
+    if log_path.exists():
+        log_tail = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
+    return {**item, "log_tail": log_tail}

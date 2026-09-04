@@ -116,6 +116,32 @@
     .bar.done > span { background: var(--ok); }
     .bar.err > span { background: var(--err); }
     .bar-meta { margin-top: 4px; font-size: 0.75rem; color: var(--muted); }
+    .drop {
+      border: 1.5px dashed var(--border);
+      border-radius: 12px;
+      padding: 28px 18px;
+      text-align: center;
+      color: var(--muted);
+      background: #0c121b;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .drop.drag { border-color: var(--accent); background: #122033; color: var(--text); }
+    .drop strong { color: var(--text); }
+    #transcriptOut {
+      margin-top: 12px;
+      max-height: 280px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.85rem;
+      line-height: 1.45;
+      color: var(--text);
+      background: #0c121b;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
   </style>
 </head>
 <body>
@@ -134,6 +160,35 @@
       <p class="sub" style="margin:12px 0 0;font-size:0.85rem" id="controlHint">
         One-time Mac setup (if Restart Brave fails): <code>./bin/enable-ui.sh</code>
       </p>
+    </section>
+
+    <section class="card">
+      <label>Transcribe (Portuguese) — drop MP4 / audio</label>
+      <div class="drop" id="dropZone">
+        <strong>Drop video/audio here</strong> or click to choose a file<br>
+        <span style="font-size:0.8rem">Uses mlx-whisper · language=pt · writes .txt / .srt under out/transcripts</span>
+      </div>
+      <input id="fileInput" type="file" accept="video/*,audio/*,.mp4,.wav,.m4a,.mp3" hidden />
+      <div class="row" style="grid-template-columns: 1fr 1fr; margin-top:12px">
+        <div>
+          <label for="txLang">Language</label>
+          <select id="txLang">
+            <option value="pt" selected>Portuguese (pt)</option>
+            <option value="es">Spanish (es)</option>
+            <option value="en">English (en)</option>
+          </select>
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <div class="meta" id="txMeta"></div>
+        </div>
+      </div>
+      <div id="txProgress" hidden>
+        <div class="bar" id="txBar"><span id="txBarFill" style="width:0%"></span></div>
+        <div class="bar-meta" id="txBarMeta">0%</div>
+      </div>
+      <div id="transcriptOut" hidden></div>
+      <p id="txLinks"></p>
     </section>
 
     <section class="card">
@@ -197,6 +252,7 @@ https://hotmart.com/es/club/.../content/ID3"></textarea>
   <script>
     const $ = (id) => document.getElementById(id);
     let pollTimer = null;
+    let txPollTimer = null;
     const CLIP_DEFAULT = 5400; // 1h 30m
 
     function applyConfig(cfg) {
@@ -204,12 +260,21 @@ https://hotmart.com/es/club/.../content/ID3"></textarea>
       const bravePill = cfg.brave_ok
         ? '<span class="pill ok">Brave CDP connected</span>'
         : '<span class="pill err">Brave CDP offline</span>';
-      $("svcMeta").innerHTML = bravePill +
+      const tx = cfg.transcribe || {};
+      const txPill = tx.ready
+        ? `<span class="pill ok">transcribe ${tx.mlx_whisper ? "mlx" : "fw"}</span>`
+        : '<span class="pill err">transcribe offline</span>';
+      $("svcMeta").innerHTML = bravePill + txPill +
         (cfg.cdp_selected ? `<span class="pill">${cfg.cdp_selected}</span>` : "");
       $("subtitle").innerHTML = cfg.brave_ok
-        ? 'Paste one or more club URLs (one per line) → <strong>Download</strong>. Stay logged into Hotmart in Brave.'
+        ? 'Paste club URLs → <strong>Download</strong>, or drop a file to <strong>Transcribe</strong> (pt).'
         : 'Brave is offline — click <strong>Restart Brave</strong>, log into Hotmart, then Download.';
       $("controlHint").style.display = cfg.brave_ok ? "none" : "block";
+      if (!tx.ready) {
+        $("txMeta").innerHTML = '<span class="pill err">pip install mlx-whisper</span>';
+      } else {
+        $("txMeta").innerHTML = `<span class="pill ok">${tx.default_language || "pt"}</span>`;
+      }
     }
 
     function refreshConfig() {
@@ -220,6 +285,106 @@ https://hotmart.com/es/club/.../content/ID3"></textarea>
     setInterval(refreshConfig, 8000);
 
     $("btnRefreshStatus").onclick = () => refreshConfig();
+
+    // --- Transcribe drop / upload ---
+    const drop = $("dropZone");
+    const fileInput = $("fileInput");
+    drop.onclick = () => fileInput.click();
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("drag"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
+    drop.addEventListener("drop", (e) => {
+      e.preventDefault();
+      drop.classList.remove("drag");
+      const f = e.dataTransfer.files?.[0];
+      if (f) uploadAndTranscribe(f);
+    });
+    fileInput.onchange = () => {
+      const f = fileInput.files?.[0];
+      if (f) uploadAndTranscribe(f);
+      fileInput.value = "";
+    };
+
+    async function uploadAndTranscribe(file) {
+      $("txMeta").innerHTML = '<span class="pill">uploading…</span>';
+      $("transcriptOut").hidden = false;
+      $("transcriptOut").textContent = "Uploading " + file.name + "…";
+      $("txLinks").innerHTML = "";
+      const fd = new FormData();
+      fd.append("file", file);
+      const lang = $("txLang").value || "pt";
+      try {
+        const res = await fetch(`/api/transcribe/upload?language=${encodeURIComponent(lang)}`, {
+          method: "POST",
+          body: fd,
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(detailError(data) || `HTTP ${res.status}`);
+        await pollTranscript(data.transcript.id);
+      } catch (e) {
+        $("txMeta").innerHTML = '<span class="pill err">error</span>';
+        $("transcriptOut").textContent = String(e.message || e);
+      }
+    }
+
+    async function startJobTranscribe(jobId) {
+      const lang = $("txLang").value || "pt";
+      $("transcriptOut").hidden = false;
+      $("transcriptOut").textContent = "Starting transcription…";
+      $("txLinks").innerHTML = "";
+      const res = await fetch(`/api/transcribe/job/${jobId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ language: lang }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(detailError(data) || `HTTP ${res.status}`);
+      await pollTranscript(data.transcript.id);
+    }
+
+    async function pollTranscript(txId) {
+      if (txPollTimer) clearTimeout(txPollTimer);
+      const res = await fetch(`/api/transcribe/${txId}`);
+      const t = await res.json();
+      const st = t.status === "ok" ? "ok" : t.status === "running" || t.status === "queued" ? "" : "err";
+      const pct = Math.max(0, Math.min(100, Number(t.progress || 0)));
+      $("txMeta").innerHTML = `
+        <span class="pill ${st}">${t.status}</span>
+        <span class="pill">${t.phase || ""}</span>
+        <span class="pill">${pct}%</span>
+        <span class="pill">${t.source_label || ""}</span>
+      `;
+      $("txProgress").hidden = false;
+      const bar = $("txBar");
+      bar.classList.toggle("done", t.status === "ok");
+      bar.classList.toggle("err", t.status === "error");
+      $("txBarFill").style.width = (t.status === "ok" ? 100 : pct) + "%";
+      $("txBarMeta").textContent = (t.progress_label || (pct + "%")) + (t.phase ? ` · ${t.phase}` : "");
+
+      if (t.status === "ok" && t.result) {
+        $("transcriptOut").hidden = false;
+        $("transcriptOut").textContent = t.text_preview || t.result.text || "(empty)";
+        $("txLinks").innerHTML = `
+          <a href="${t.result.txt}" download>Download .txt</a> ·
+          <a href="${t.result.srt}" download>Download .srt</a> ·
+          <a href="${t.result.json}" download>Download .json</a>
+        `;
+        return;
+      }
+      if (t.status === "error") {
+        $("transcriptOut").hidden = false;
+        $("transcriptOut").textContent = t.error || t.log_tail || "transcription failed";
+        return;
+      }
+      $("transcriptOut").hidden = false;
+      $("transcriptOut").textContent = t.log_tail
+        || "Transcribing… first run may download the Whisper model.";
+      txPollTimer = setTimeout(() => pollTranscript(txId), 800);
+    }
+
+    function jobActions(job) {
+      if (job.status !== "ok" || !job.output_file) return "";
+      return ` <button type="button" class="secondary btn-tx" data-job="${job.id}" style="padding:6px 12px;font-size:0.8rem;margin-left:6px">Transcribe</button>`;
+    }
 
     $("btnRestartBrave").onclick = async () => {
       if (!confirm("Quit Brave and restart it with remote debugging?")) return;
@@ -286,7 +451,8 @@ https://hotmart.com/es/club/.../content/ID3"></textarea>
       if (job.embed_src && !$("snippet").value) $("snippet").value = job.embed_src;
       if (job.output_file) {
         const name = job.output_name || job.title || "output.mp4";
-        $("fileLink").innerHTML = `<a href="${job.output_file}" download="${name}">Download ${name}</a>`;
+        $("fileLink").innerHTML = `<a href="${job.output_file}" download="${name}">Download ${name}</a>${jobActions(job)}`;
+        bindTxButtons();
       }
       if (job.status === "running" || job.status === "queued") {
         pollTimer = setTimeout(() => pollJob(jobId), 800);
@@ -315,11 +481,12 @@ https://hotmart.com/es/club/.../content/ID3"></textarea>
         return `<div class="batch-item">
           <span class="pill ${js}">${j.status}</span>
           <span class="pill">${j.phase || ""}</span>
-          <span class="pill">${title}</span>${link}
+          <span class="pill">${title}</span>${link}${jobActions(j)}
           ${progressBar(j)}
           <div class="url">${j.club_url || ""}</div>
         </div>`;
       }).join("");
+      bindTxButtons();
       const active = (batch.jobs || []).find(j => j.status === "running")
         || (batch.jobs || []).find(j => j.status === "queued");
       $("log").textContent = active?.log_tail || (batch.jobs || []).slice(-1)[0]?.log_tail || "";
@@ -328,6 +495,21 @@ https://hotmart.com/es/club/.../content/ID3"></textarea>
       if (batch.status === "running") {
         pollTimer = setTimeout(() => pollBatch(batchId), 800);
       }
+    }
+
+    function bindTxButtons() {
+      document.querySelectorAll(".btn-tx").forEach((btn) => {
+        btn.onclick = async () => {
+          btn.disabled = true;
+          try {
+            await startJobTranscribe(btn.dataset.job);
+          } catch (e) {
+            alert(e.message || e);
+          } finally {
+            btn.disabled = false;
+          }
+        };
+      });
     }
 
     $("btnDownload").onclick = async () => {
