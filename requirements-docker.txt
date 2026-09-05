@@ -3,5 +3,3 @@ uvicorn[standard]==0.35.0
 pydantic==2.11.7
 playwright==1.55.0
 python-multipart==0.0.20
-# Host/Mac only (not installed in Docker — see requirements-docker.txt)
-mlx-whisper==0.4.2

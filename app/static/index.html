@@ -261,8 +261,9 @@ https://hotmart.com/es/club/.../content/ID3"></textarea>
         ? '<span class="pill ok">Brave CDP connected</span>'
         : '<span class="pill err">Brave CDP offline</span>';
       const tx = cfg.transcribe || {};
+      const txLabel = tx.engine_label || (tx.via_host ? "mlx (host)" : tx.mlx_whisper ? "mlx" : "fw");
       const txPill = tx.ready
-        ? `<span class="pill ok">transcribe ${tx.mlx_whisper ? "mlx" : "fw"}</span>`
+        ? `<span class="pill ok">transcribe ${txLabel}</span>`
         : '<span class="pill err">transcribe offline</span>';
       $("svcMeta").innerHTML = bravePill + txPill +
         (cfg.cdp_selected ? `<span class="pill">${cfg.cdp_selected}</span>` : "");
@@ -271,9 +272,13 @@ https://hotmart.com/es/club/.../content/ID3"></textarea>
         : 'Brave is offline — click <strong>Restart Brave</strong>, log into Hotmart, then Download.';
       $("controlHint").style.display = cfg.brave_ok ? "none" : "block";
       if (!tx.ready) {
-        $("txMeta").innerHTML = '<span class="pill err">pip install mlx-whisper</span>';
+        $("txMeta").innerHTML = cfg.host_control_ok
+          ? '<span class="pill err">install mlx-whisper in .venv</span>'
+          : '<span class="pill err">./bin/host-control.sh</span>';
       } else {
-        $("txMeta").innerHTML = `<span class="pill ok">${tx.default_language || "pt"}</span>`;
+        const bits = [`<span class="pill ok">${tx.default_language || "pt"}</span>`];
+        if (tx.via_host) bits.push('<span class="pill ok">via host</span>');
+        $("txMeta").innerHTML = bits.join("");
       }
     }
 

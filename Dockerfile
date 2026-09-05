@@ -7,8 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Keep mlx-whisper out of the image (Apple Silicon host-only; pulls huge torch/CUDA).
+COPY requirements-docker.txt .
+RUN pip install --no-cache-dir -r requirements-docker.txt
 
 COPY app ./app
 COPY bin ./bin

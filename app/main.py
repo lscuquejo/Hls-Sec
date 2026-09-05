@@ -309,6 +309,26 @@ async def index() -> HTMLResponse:
     return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"))
 
 
+def _transcribe_info(host_control: dict | None = None) -> dict:
+    """Local mlx if available; otherwise host-control (Docker → Mac)."""
+    info = tx.backend_info()
+    hc = host_control if host_control is not None else {}
+    host_tx = bool(hc.get("ok") and (hc.get("transcribe_ready") or hc.get("mlx_whisper")))
+    info["host_control"] = bool(hc.get("ok"))
+    info["via_host"] = bool(host_tx and not info.get("ready"))
+    info["ready"] = bool(info.get("ready") or host_tx)
+    if host_tx and not info.get("mlx_whisper"):
+        info["mlx_whisper"] = True
+        info["engine_label"] = "mlx (host)"
+    elif info.get("mlx_whisper"):
+        info["engine_label"] = "mlx"
+    elif info.get("faster_whisper"):
+        info["engine_label"] = "fw"
+    else:
+        info["engine_label"] = "offline"
+    return info
+
+
 @app.get("/api/config")
 async def api_config():
     probed = await _probe_cdp_candidates()
@@ -330,7 +350,7 @@ async def api_config():
             else "Click “Restart Brave”, then log into Hotmart in the Brave window."
         ),
         "browser_debugger": "http://127.0.0.1:3000/debugger/",
-        "transcribe": tx.backend_info(),
+        "transcribe": _transcribe_info(host_control),
     }
 
 
@@ -358,7 +378,7 @@ async def _host_control_health() -> dict:
 
     def _get(url: str) -> dict | None:
         try:
-            with urllib.request.urlopen(f"{url}/health", timeout=1.5) as resp:
+            with urllib.request.urlopen(f"{url}/health", timeout=2.0) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
             return None
@@ -368,6 +388,66 @@ async def _host_control_health() -> dict:
         if data and data.get("ok"):
             return {**data, "url": base}
     return {"ok": False}
+
+
+def _to_repo_rel(path: Path) -> str:
+    """Path relative to APP_ROOT so host-control can resolve via shared ./out volume."""
+    resolved = path.resolve()
+    root = ROOT.resolve()
+    try:
+        return str(resolved.relative_to(root))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"path outside app root: {path}") from e
+
+
+async def _host_control_post(path: str, payload: dict, timeout: float = 60) -> dict:
+    import urllib.error
+    import urllib.request
+
+    body = json.dumps(payload).encode("utf-8")
+    errors: list[str] = []
+
+    def _post(base: str) -> dict:
+        req = urllib.request.Request(
+            f"{base}{path}",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    for base in _host_control_bases():
+        try:
+            return await asyncio.to_thread(_post, base)
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as e:
+            errors.append(f"{base}: {e}")
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "host-control unreachable for transcription.\n"
+            "On the Mac: ./bin/install-autostart.sh  or  ./bin/host-control.sh\n"
+            f"Tried: {'; '.join(errors) or 'none'}"
+        ),
+    )
+
+
+async def _host_control_get(path: str, timeout: float = 10) -> dict | None:
+    import urllib.error
+    import urllib.request
+
+    def _get(base: str) -> dict | None:
+        try:
+            with urllib.request.urlopen(f"{base}{path}", timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            return None
+
+    for base in _host_control_bases():
+        data = await asyncio.to_thread(_get, base)
+        if data is not None:
+            return data
+    return None
 
 
 async def _restart_brave_via_host_control() -> dict:
@@ -881,15 +961,61 @@ async def _run_transcribe(tx_id: str, media: Path, language: str, model: str | N
             log_f.write(f"[transcribe] source={media}\n")
             log_f.write(f"[transcribe] language={language} model={model or tx.DEFAULT_MODEL}\n")
             log_f.flush()
-        async with _tx_lock:
-            result = await asyncio.to_thread(
-                tx.transcribe_file,
-                media,
-                out_dir=TRANSCRIPTS,
-                language=language or tx.DEFAULT_LANGUAGE,
-                model=model or tx.DEFAULT_MODEL,
-                progress_cb=on_progress,
+
+        if tx.backend_info().get("ready"):
+            async with _tx_lock:
+                result = await asyncio.to_thread(
+                    tx.transcribe_file,
+                    media,
+                    out_dir=TRANSCRIPTS,
+                    language=language or tx.DEFAULT_LANGUAGE,
+                    model=model or tx.DEFAULT_MODEL,
+                    progress_cb=on_progress,
+                )
+        else:
+            # Docker UI → Mac host-control (mlx-whisper)
+            media_rel = _to_repo_rel(media)
+            out_rel = _to_repo_rel(TRANSCRIPTS)
+            with log_path.open("a", encoding="utf-8") as log_f:
+                log_f.write(f"[transcribe] via host-control media={media_rel}\n")
+            started = await _host_control_post(
+                "/transcribe",
+                {
+                    "tx_id": tx_id,
+                    "media": media_rel,
+                    "out_dir": out_rel,
+                    "language": language or tx.DEFAULT_LANGUAGE,
+                    "model": model or "",
+                },
             )
+            if not started.get("ok"):
+                raise RuntimeError(started.get("error") or "host-control rejected transcribe")
+
+            result = None
+            while True:
+                remote = await _host_control_get(f"/transcribe/{tx_id}")
+                if not remote:
+                    # fall back to shared status file on volume
+                    status_path = TRANSCRIPTS / f"tx-{tx_id}.host.json"
+                    if status_path.exists():
+                        try:
+                            remote = json.loads(status_path.read_text(encoding="utf-8"))
+                        except (OSError, json.JSONDecodeError):
+                            remote = None
+                if not remote:
+                    await asyncio.sleep(1.0)
+                    continue
+                pct = int(remote.get("progress") or 0)
+                label = remote.get("progress_label") or remote.get("phase") or ""
+                on_progress(pct, str(label))
+                st = remote.get("status")
+                if st == "ok":
+                    result = remote.get("result") or {}
+                    break
+                if st == "error":
+                    raise RuntimeError(remote.get("error") or "host transcription failed")
+                await asyncio.sleep(0.75)
+
         tx_jobs[tx_id].update(
             {
                 "status": "ok",
@@ -940,6 +1066,21 @@ def _new_tx_job(source_label: str, media: Path) -> str:
     return tx_id
 
 
+async def _ensure_transcribe_ready() -> None:
+    info = _transcribe_info(await _host_control_health())
+    if info.get("ready"):
+        return
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "Transcription needs mlx-whisper on the Mac.\n"
+            "  cd ~/studies/hls-security-probe && .venv/bin/pip install mlx-whisper\n"
+            "  ./bin/install-autostart.sh   # or ./bin/host-control.sh\n"
+            "Then click Refresh status."
+        ),
+    )
+
+
 @app.post("/api/transcribe/job/{job_id}")
 async def api_transcribe_job(job_id: str, body: TranscribeJobRequest = TranscribeJobRequest()):
     job = jobs.get(job_id)
@@ -947,11 +1088,7 @@ async def api_transcribe_job(job_id: str, body: TranscribeJobRequest = Transcrib
         raise HTTPException(status_code=404, detail="download job not found")
     if job.get("status") != "ok":
         raise HTTPException(status_code=400, detail="Download is not finished yet")
-    if not tx.backend_info().get("ready"):
-        raise HTTPException(
-            status_code=503,
-            detail="Install mlx-whisper (Mac): pip install mlx-whisper",
-        )
+    await _ensure_transcribe_ready()
     media = _resolve_media_from_job(job)
     tx_id = _new_tx_job(job.get("output_name") or job.get("media") or job_id, media)
     job["transcript_id"] = tx_id
@@ -966,11 +1103,7 @@ async def api_transcribe_upload(
     file: UploadFile = File(...),
     language: str = "pt",
 ):
-    if not tx.backend_info().get("ready"):
-        raise HTTPException(
-            status_code=503,
-            detail="Install mlx-whisper (Mac): pip install mlx-whisper",
-        )
+    await _ensure_transcribe_ready()
     suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(file.filename or "upload").stem)[:80] or "upload"
     dest = UPLOADS / f"{safe}-{uuid.uuid4().hex[:8]}{suffix}"
@@ -991,5 +1124,7 @@ async def api_transcribe_status(tx_id: str):
     log_tail = ""
     log_path = Path(item.get("log_path") or "")
     if log_path.exists():
-        log_tail = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
+        raw = log_path.read_text(encoding="utf-8", errors="replace")[-8000:]
+        # strip CR / other controls so clients can json.parse reliably
+        log_tail = "".join(ch if (ch >= " " or ch in "\n\t") else " " for ch in raw)
     return {**item, "log_tail": log_tail}
